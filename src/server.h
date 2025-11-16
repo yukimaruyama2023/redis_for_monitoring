@@ -1362,6 +1362,10 @@ typedef struct {
 #endif
 
 typedef struct client {
+    /*---------------- metris for Replication ------------------------*/
+    long long reploff;      /* Applied replication offset if this is a master. */
+    long long read_reploff; /* Read replication offset if this is a master. */
+    /*-------------------------------------------------------*/
     uint64_t id;            /* Client incremental unique ID. */
     uint64_t flags;         /* Client flags: CLIENT_* macros. */
     connection *conn;
@@ -1422,8 +1426,6 @@ typedef struct client {
     off_t repldboff;        /* Replication DB file offset. */
     off_t repldbsize;       /* Replication DB file size. */
     sds replpreamble;       /* Replication DB preamble. */
-    long long read_reploff; /* Read replication offset if this is a master. */
-    long long reploff;      /* Applied replication offset if this is a master. */
     long long reploff_next; /* Next value to set for reploff when a command finishes executing */
     long long repl_applied; /* Applied replication data count in querybuf, if this is a replica. */
     long long repl_ack_off; /* Replication ack offset, if this is a slave. */
@@ -1652,38 +1654,42 @@ typedef struct redisOpArray {
 /* This structure is returned by the getMemoryOverheadData() function in
  * order to return memory overhead information. */
 struct redisMemOverhead {
-    size_t peak_allocated;
-    size_t total_allocated;
+    /*---------------- metrics  -------------------------------*/
+    float peak_perc;
+    size_t overhead_total;
     size_t startup_allocated;
-    size_t repl_backlog;
-    size_t replica_fullsync_buffer;
-    size_t clients_slaves;
-    size_t clients_normal;
-    size_t cluster_links;
-    size_t aof_buffer;
+    size_t dataset;
+    float dataset_perc;
     size_t eval_caches;
     size_t functions_caches;
-    size_t script_vm;
-    size_t overhead_total;
-    size_t dataset;
-    size_t total_keys;
-    size_t bytes_per_key;
-    float dataset_perc;
-    float peak_perc;
-    float total_frag;
-    ssize_t total_frag_bytes;
     float allocator_frag;
     ssize_t allocator_frag_bytes;
     float allocator_rss;
     ssize_t allocator_rss_bytes;
     float rss_extra;
     size_t rss_extra_bytes;
+    float total_frag;
+    ssize_t total_frag_bytes;
+    size_t repl_backlog;
+    size_t clients_slaves;
+    size_t clients_normal;
+    size_t asm_migrate_output_buffer;
+    size_t asm_import_input_buffer;
+    size_t cluster_links;
+    size_t aof_buffer;
+    size_t overhead_db_hashtable_rehashing;
+
+
+    /* -------------------------------------------------------- */
+    size_t peak_allocated;
+    size_t total_allocated;
+    size_t replica_fullsync_buffer;
+    size_t script_vm;
+    size_t total_keys;
+    size_t bytes_per_key;
     size_t num_dbs;
     size_t overhead_db_hashtable_lut;
-    size_t overhead_db_hashtable_rehashing;
     unsigned long db_dict_rehashing_count;
-    size_t asm_import_input_buffer;
-    size_t asm_migrate_output_buffer;
     struct {
         size_t dbid;
         size_t overhead_ht_main;
@@ -1810,18 +1816,160 @@ typedef enum childInfoType {
 } childInfoType;
 
 struct redisServer {
-    /* General */
-    pid_t pid;                  /* Main process pid. */
-    pthread_t main_thread_id;         /* Main thread id */
-    char *configfile;           /* Absolute config file path, or NULL */
-    char *executable;           /* Absolute executable file path. */
-    char **exec_argv;           /* Executable argv vector (copy). */
-    int dynamic_hz;             /* Change hz value depending on # of clients. */
+    /* metrics */
+    /* ----------------------------------------------------------------------------------------------- */
+    /* # Server */
+    int arch_bits;              /* 32 or 64 depending on sizeof(long) */
+    char runid[CONFIG_RUN_ID_SIZE+1];  /* ID always different at every exec. */
+    int port;                   /* TCP listening port */
+    int tls_port;               /* TLS listening port */
+    ustime_t ustime;            /* 'unixtime' in microseconds. */
+    redisAtomic time_t unixtime; /* Unix time sampled every cron cycle. */
+    time_t stat_starttime;          /* Server start time */
+    int hz;                     /* serverCron() calls frequency in hertz */
     int config_hz;              /* Configured HZ value. May be different than
                                    the actual 'hz' field value if dynamic-hz
                                    is enabled. */
+    unsigned int lruclock; /* Clock for LRU eviction */
+    char *executable;           /* Absolute executable file path. */
+    char *configfile;           /* Absolute config file path, or NULL */
+    int io_threads_active;      /* Is IO threads currently active? */
+
+    /* # Clients */
+    list *clients;              /* List of active clients */
+    list *slaves, *monitors;    /* List of slaves and MONITORs */
+    unsigned int maxclients;            /* Max number of simultaneous clients */
+    unsigned int blocked_clients;   /* # of clients executing a blocking cmd.*/
+    unsigned int tracking_clients;  /* # of clients with tracking enabled.*/
+    unsigned int pubsub_clients; /* # of clients in Pub/Sub mode */
+    unsigned int watching_clients; /* # of clients are wathcing keys */
+    rax *clients_timeout_table; /* Radix tree for blocked clients timeouts. */
+
+    /// memory start 
+    // zmalloc_used
+    size_t stat_peak_memory;        /* Max used memory record */
+    time_t stat_peak_memory_time;   /* Time when stat_peak_memory was recorded */
+    struct malloc_stats cron_malloc_stats; /* sampled in serverCron(). */
+
+    size_t repl_buffer_mem;         /* The memory of replication buffer. */
+    replDataBuf repl_full_sync_buffer;  /* Accumulated replication data for rdb channel replication */
+    int active_defrag_running;  /* Active defragmentation running (holds current scan aggressiveness) */
+    /// memory end
+
+    /// persistance start
+    volatile sig_atomic_t loading; /* We are loading data from disk if true */
+    volatile sig_atomic_t async_loading; /* We are loading data without blocking the db being served */
+    size_t stat_current_cow_peak;   /* Peak size of copy on write bytes. */
+    size_t stat_current_cow_bytes;  /* Copy on write bytes while child is active. */
+    monotime stat_current_cow_updated;  /* Last update time of stat_current_cow_bytes */
+    double stat_module_progress;   // for fork_perk
+    size_t stat_current_save_keys_processed;  // for fork_perk
+    size_t stat_current_save_keys_total;  // for fork_perk 
+    long long dirty;                /* Changes to DB from the last save */
+    int child_type;             /* Type of current child */
+    time_t lastsave;                /* Unix time of last successful save */
+    int lastbgsave_status;          /* C_OK or C_ERR */
+    time_t rdb_save_time_last;      /* Time used by last RDB save run. */
+    time_t rdb_save_time_start;     /* Current RDB save start time. */
+    long long stat_rdb_saves;       /* number of rdb saves performed */
+    long long stat_rdb_consecutive_failures; /* The number of consecutive failures of rdb saves */
+    size_t stat_rdb_cow_bytes;      /* Copy on write bytes during RDB saving. */
+    long long rdb_last_load_keys_expired;  /* number of expired keys when loading RDB */
+    long long rdb_last_load_keys_loaded;   /* number of loaded keys when loading RDB */
+    int aof_state;                  /* AOF_(ON|OFF|WAIT_REWRITE) */
+    time_t aof_rewrite_time_last;   /* Time used by last AOF rewrite run. */
+    time_t aof_rewrite_time_start;  /* Current AOF rewrite start time. */
+    long long stat_aof_rewrites;    /* number of aof file rewrites performed */
+    long long stat_aofrw_consecutive_failures; /* The number of consecutive failures of aofrw */
+    int aof_last_write_status;      /* C_OK or C_ERR */
+    redisAtomic int aof_bio_fsync_status; /* Status of AOF fsync in bio job. */
+    size_t stat_aof_cow_bytes;      /* Copy on write bytes during AOF rewrite. */
+    int aof_enabled;                /* AOF configuration */
+    off_t aof_current_size;         /* AOF current size (Including BASE + INCRs). */
+    off_t aof_rewrite_base_size;    /* AOF size on latest startup or rewrite. */
+    int aof_rewrite_scheduled;      /* Rewrite once BGSAVE terminates. */
+    sds aof_buf;      /* AOF buffer, written before entering the event loop */
+    unsigned long aof_delayed_fsync;  /* delayed AOF fsync() counter */
+    time_t loading_start_time;
+    off_t loading_total_bytes;
+    off_t loading_rdb_used_mem;
+    off_t loading_loaded_bytes;
+    /// persistance end
+    
+    /// start Stats
+    long long stat_numcommands;     /* Number of processed commands */
+    long long stat_numconnections;  /* Number of connections received */
+    struct {
+        long long last_sample_base;  /* The divisor of last sample window */
+        long long last_sample_value; /* The dividend of last sample window */
+        long long samples[STATS_METRIC_SAMPLES];
+        int idx;
+    } inst_metric[STATS_METRIC_COUNT]; // for getInsttaneousMetric
+    redisAtomic long long stat_net_input_bytes; /* Bytes read from network. */
+    redisAtomic long long stat_net_output_bytes; /* Bytes written to network. */
+    redisAtomic long long stat_net_repl_input_bytes; /* Bytes read during replication, added to stat_net_input_bytes in 'info'. */
+    redisAtomic long long stat_net_repl_output_bytes; /* Bytes written during replication, added to stat_net_output_bytes in 'info'. */
+    redisAtomic long long stat_client_qbuf_limit_disconnections;  /* Total number of clients reached query buf length limit */
+    long long stat_rejected_conn;   /* Clients rejected because of maxclients */
+    long long stat_sync_full;       /* Number of full resyncs with slaves. */
+    long long stat_sync_partial_ok; /* Number of accepted PSYNC requests. */
+    long long stat_sync_partial_err;/* Number of unaccepted PSYNC requests. */
+    long long stat_expired_subkeys; /* Number of expired subkeys (Currently only hash-fields) */
+    long long stat_expiredkeys;     /* Number of expired keys */
+    double stat_expired_stale_perc; /* Percentage of keys probably expired */
+    long long stat_expired_time_cap_reached_count; /* Early expire cycle stops.*/
+    long long stat_expire_cycle_time_used; /* Cumulative microseconds used. */
+    long long stat_evictedkeys;     /* Number of evicted keys (maxmemory) */
+    long long stat_evictedclients;  /* Number of evicted clients */
+    long long stat_evictedscripts;  /* Number of evicted lua scripts. */
+    long long stat_total_eviction_exceeded_time;  /* Total time over the memory limit, unit us */
+    monotime stat_last_eviction_exceeded_time;  /* Timestamp of current eviction start, unit us */
+    long long stat_keyspace_hits;   /* Number of successful lookups of keys */
+    long long stat_keyspace_misses; /* Number of failed lookups of keys */
+    kvstore *pubsub_channels;  /* Map channels to list of subscribed clients */
+    dict *pubsub_patterns;  /* A dict of pubsub_patterns */
+    kvstore *pubsubshard_channels;  /* Map shard channels in every slot to list of subscribed clients */
+    long long stat_fork_time;       /* Time needed to perform latest fork() */
+    long long stat_total_forks;     /* Total count of fork. */
+    dict *migrate_cached_sockets;/* MIGRATE cached sockets */
+    long long stat_active_defrag_hits;      /* number of allocations moved */
+    long long stat_active_defrag_misses;    /* number of allocations scanned but not moved */
+    long long stat_active_defrag_key_hits;  /* number of keys with moved allocations */
+    long long stat_active_defrag_key_misses;/* number of keys scanned and not moved */
+    long long stat_total_active_defrag_time; /* Total time memory fragmentation over the limit, unit us */
+    monotime stat_last_active_defrag_time; /* Timestamp of current active defrag start */
+    long long stat_unexpected_error_replies; /* Number of unexpected (aof-loading, replica to master, etc.) error replies */
+    long long stat_total_error_replies; /* Total number of issued error replies ( command + rejected errors ) */
+    long long stat_dump_payload_sanitizations; /* Number deep dump payloads integrity validations. */
+    redisAtomic long long stat_io_reads_processed[IO_THREADS_MAX_NUM]; /* Number of read events processed by IO / Main threads */
+    redisAtomic long long stat_io_writes_processed[IO_THREADS_MAX_NUM]; /* Number of write events processed by IO / Main threads */
+    long long stat_total_prefetch_batches;  /* Total number of prefetched batches */
+    long long stat_total_prefetch_entries;  /* Total number of prefetched dict entries */
+    long long stat_client_outbuf_limit_disconnections;  /* Total number of clients reached output buf length limit */
+    long long stat_reply_buffer_shrinks; /* Total number of output buffer shrinks */
+    long long stat_reply_buffer_expands; /* Total number of output buffer expands */
+    durationStats duration_stats[EL_DURATION_TYPE_NUM];
+    /// end Stats 
+
+    /// start Replication
+    time_t repl_down_since; /* Unix time at which link with master went down */
+    char replid[CONFIG_RUN_ID_SIZE+1];  /* My current replication ID. */
+    char replid2[CONFIG_RUN_ID_SIZE+1]; /* replid inherited from master*/
+    long long master_repl_offset;   /* My current replication offset */
+    long long second_replid_offset; /* Accept offsets up to this for replid2. */
+    long long repl_backlog_size;    /* Backlog circular buffer size */
+    /// end Replication
+    
+    /// start CPU
+    /// end CPU
+    /* ----------------------------------------------------------------------------------------------- */
+
+    /* General */
+    pid_t pid;                  /* Main process pid. */
+    pthread_t main_thread_id;         /* Main thread id */
+    char **exec_argv;           /* Executable argv vector (copy). */
+    int dynamic_hz;             /* Change hz value depending on # of clients. */
     mode_t umask;               /* The umask value of the process on startup */
-    int hz;                     /* serverCron() calls frequency in hertz */
     int in_fork_child;          /* indication that this is a fork child */
     redisDb *db;
     dict *commands;             /* Command table */
@@ -1829,18 +1977,14 @@ struct redisServer {
     aeEventLoop *el;
     rax *errors;                /* Errors table */
     int errors_enabled;         /* If true, errorstats is enabled, and we will add new errors. */
-    unsigned int lruclock; /* Clock for LRU eviction */
     redisAtomic int shutdown_asap; /* Shutdown ordered by signal handler. */
     redisAtomic int crashing;      /* Server is crashing report. */
     mstime_t shutdown_mstime;   /* Timestamp to limit graceful shutdown. */
     redisAtomic int last_sig_received;      /* Indicates the last SIGNAL received, if any (e.g., SIGINT or SIGTERM). */
     int shutdown_flags;         /* Flags passed to prepareForShutdown(). */
     int activerehashing;        /* Incremental rehash in serverCron() */
-    int active_defrag_running;  /* Active defragmentation running (holds current scan aggressiveness) */
     char *pidfile;              /* PID file path */
-    int arch_bits;              /* 32 or 64 depending on sizeof(long) */
     int cronloops;              /* Number of times the cron function run */
-    char runid[CONFIG_RUN_ID_SIZE+1];  /* ID always different at every exec. */
     int sentinel_mode;          /* True if this instance is a Sentinel. */
     size_t initial_memory_usage; /* Bytes used after initialization. */
     int always_show_logo;       /* Show logo even for non-stdout logging. */
@@ -1860,11 +2004,8 @@ struct redisServer {
     list *loadmodule_queue;     /* List of modules to load at startup. */
     int module_pipe[2];         /* Pipe used to awake the event loop by module threads. */
     pid_t child_pid;            /* PID of current child */
-    int child_type;             /* Type of current child */
     redisAtomic int module_gil_acquring; /* Indicates whether the GIL is being acquiring by the main thread. */
     /* Networking */
-    int port;                   /* TCP listening port */
-    int tls_port;               /* TLS listening port */
     int tcp_backlog;            /* TCP listen() backlog */
     char *bindaddr[CONFIG_BINDADDR_MAX]; /* Addresses we should bind to */
     int bindaddr_count;         /* Number of addresses in server.bindaddr[] */
@@ -1874,11 +2015,9 @@ struct redisServer {
     connListener listeners[CONN_TYPE_MAX]; /* TCP/Unix/TLS even more types */
     uint32_t socket_mark_id;    /* ID for listen socket marking */
     connListener clistener;     /* Cluster bus listener */
-    list *clients;              /* List of active clients */
     list *clients_to_close;     /* Clients to close asynchronously */
     list *clients_pending_write; /* There is to write or install handler. */
     list *clients_pending_read;  /* Client has pending read socket buffers. */
-    list *slaves, *monitors;    /* List of slaves and MONITORs */
     client *current_client;     /* The client that triggered the command execution (External or AOF). */
     client *executing_client;   /* The client executing the current command (possibly script or module). */
 
@@ -1890,7 +2029,6 @@ struct redisServer {
     /* Stuff for client mem eviction */
     clientMemUsageBucket* client_mem_usage_buckets;
 
-    rax *clients_timeout_table; /* Radix tree for blocked clients timeouts. */
     int execution_nesting;      /* Execution nesting level.
                                  * e.g. call(), async module stuff (timers, events, etc.),
                                  * cron stuff (active expire, eviction) */
@@ -1899,13 +2037,11 @@ struct redisServer {
     list *postponed_clients;       /* List of postponed clients */
     pause_event client_pause_per_purpose[NUM_PAUSE_PURPOSES];
     char neterr[ANET_ERR_LEN];   /* Error buffer for anet.c */
-    dict *migrate_cached_sockets;/* MIGRATE cached sockets */
     redisAtomic uint64_t next_client_id; /* Next client unique ID. Incremental. */
     int protected_mode;         /* Don't accept external connections. */
     int io_threads_num;         /* Number of IO threads to use. */
     int io_threads_clients_num[IO_THREADS_MAX_NUM]; /* Number of clients assigned to each IO thread. */
     int io_threads_do_reads;    /* Read and parse from IO threads? */
-    int io_threads_active;      /* Is IO threads currently active? */
     pendingCommandPool cmd_pool; /* Shared pool for reusing pendingCommand,
                                   * only when IO threads disabled */
     int prefetch_batch_max_size;/* Maximum number of keys to prefetch in a single batch */
@@ -1915,89 +2051,20 @@ struct redisServer {
     int enable_module_cmd;           /* Enable MODULE commands, see PROTECTED_ACTION_ALLOWED_* */
 
     /* RDB / AOF loading information */
-    volatile sig_atomic_t loading; /* We are loading data from disk if true */
-    volatile sig_atomic_t async_loading; /* We are loading data without blocking the db being served */
-    off_t loading_total_bytes;
-    off_t loading_rdb_used_mem;
-    off_t loading_loaded_bytes;
-    time_t loading_start_time;
     off_t loading_process_events_interval_bytes;
     /* Fields used only for stats */
-    time_t stat_starttime;          /* Server start time */
-    long long stat_numcommands;     /* Number of processed commands */
-    long long stat_numconnections;  /* Number of connections received */
-    long long stat_expiredkeys;     /* Number of expired keys */
-    long long stat_expired_subkeys; /* Number of expired subkeys (Currently only hash-fields) */
-    double stat_expired_stale_perc; /* Percentage of keys probably expired */
-    long long stat_expired_time_cap_reached_count; /* Early expire cycle stops.*/
-    long long stat_expire_cycle_time_used; /* Cumulative microseconds used. */
-    long long stat_evictedkeys;     /* Number of evicted keys (maxmemory) */
-    long long stat_evictedclients;  /* Number of evicted clients */
-    long long stat_evictedscripts;  /* Number of evicted lua scripts. */
-    long long stat_total_eviction_exceeded_time;  /* Total time over the memory limit, unit us */
-    monotime stat_last_eviction_exceeded_time;  /* Timestamp of current eviction start, unit us */
-    long long stat_keyspace_hits;   /* Number of successful lookups of keys */
-    long long stat_keyspace_misses; /* Number of failed lookups of keys */
-    long long stat_active_defrag_hits;      /* number of allocations moved */
-    long long stat_active_defrag_misses;    /* number of allocations scanned but not moved */
-    long long stat_active_defrag_key_hits;  /* number of keys with moved allocations */
-    long long stat_active_defrag_key_misses;/* number of keys scanned and not moved */
     long long stat_active_defrag_scanned;   /* number of dictEntries scanned */
-    long long stat_total_active_defrag_time; /* Total time memory fragmentation over the limit, unit us */
-    monotime stat_last_active_defrag_time; /* Timestamp of current active defrag start */
-    size_t stat_peak_memory;        /* Max used memory record */
-    time_t stat_peak_memory_time;   /* Time when stat_peak_memory was recorded */
-    long long stat_aof_rewrites;    /* number of aof file rewrites performed */
-    long long stat_aofrw_consecutive_failures; /* The number of consecutive failures of aofrw */
-    long long stat_rdb_saves;       /* number of rdb saves performed */
-    long long stat_rdb_consecutive_failures; /* The number of consecutive failures of rdb saves */
-    long long stat_fork_time;       /* Time needed to perform latest fork() */
     double stat_fork_rate;          /* Fork rate in GB/sec. */
-    long long stat_total_forks;     /* Total count of fork. */
-    long long stat_rejected_conn;   /* Clients rejected because of maxclients */
-    long long stat_sync_full;       /* Number of full resyncs with slaves. */
-    long long stat_sync_partial_ok; /* Number of accepted PSYNC requests. */
-    long long stat_sync_partial_err;/* Number of unaccepted PSYNC requests. */
     list *slowlog;                  /* SLOWLOG list of commands */
     long long slowlog_entry_id;     /* SLOWLOG current entry ID */
     long long slowlog_log_slower_than; /* SLOWLOG time limit (to get logged) */
     unsigned long slowlog_max_len;     /* SLOWLOG max number of items logged */
-    struct malloc_stats cron_malloc_stats; /* sampled in serverCron(). */
-    redisAtomic long long stat_net_input_bytes; /* Bytes read from network. */
-    redisAtomic long long stat_net_output_bytes; /* Bytes written to network. */
-    redisAtomic long long stat_net_repl_input_bytes; /* Bytes read during replication, added to stat_net_input_bytes in 'info'. */
-    redisAtomic long long stat_net_repl_output_bytes; /* Bytes written during replication, added to stat_net_output_bytes in 'info'. */
-    size_t stat_current_cow_peak;   /* Peak size of copy on write bytes. */
-    size_t stat_current_cow_bytes;  /* Copy on write bytes while child is active. */
-    monotime stat_current_cow_updated;  /* Last update time of stat_current_cow_bytes */
-    size_t stat_current_save_keys_processed;  /* Processed keys while child is active. */
-    size_t stat_current_save_keys_total;  /* Number of keys when child started. */
-    size_t stat_rdb_cow_bytes;      /* Copy on write bytes during RDB saving. */
-    size_t stat_aof_cow_bytes;      /* Copy on write bytes during AOF rewrite. */
     size_t stat_module_cow_bytes;   /* Copy on write bytes during module fork. */
-    double stat_module_progress;   /* Module save progress. */
     size_t stat_clients_type_memory[CLIENT_TYPE_COUNT];/* Mem usage by type */
     size_t stat_cluster_links_memory; /* Mem usage by cluster links */
-    long long stat_unexpected_error_replies; /* Number of unexpected (aof-loading, replica to master, etc.) error replies */
-    long long stat_total_error_replies; /* Total number of issued error replies ( command + rejected errors ) */
-    long long stat_dump_payload_sanitizations; /* Number deep dump payloads integrity validations. */
-    redisAtomic long long stat_io_reads_processed[IO_THREADS_MAX_NUM]; /* Number of read events processed by IO / Main threads */
-    redisAtomic long long stat_io_writes_processed[IO_THREADS_MAX_NUM]; /* Number of write events processed by IO / Main threads */
-    redisAtomic long long stat_client_qbuf_limit_disconnections;  /* Total number of clients reached query buf length limit */
-    long long stat_client_outbuf_limit_disconnections;  /* Total number of clients reached output buf length limit */
     long long stat_cluster_incompatible_ops; /* Number of operations that are incompatible with cluster mode */
-    long long stat_total_prefetch_entries;  /* Total number of prefetched dict entries */
-    long long stat_total_prefetch_batches;  /* Total number of prefetched batches */
     /* The following two are used to track instantaneous metrics, like
      * number of operations per second, network traffic. */
-    struct {
-        long long last_sample_base;  /* The divisor of last sample window */
-        long long last_sample_value; /* The dividend of last sample window */
-        long long samples[STATS_METRIC_SAMPLES];
-        int idx;
-    } inst_metric[STATS_METRIC_COUNT];
-    long long stat_reply_buffer_shrinks; /* Total number of output buffer shrinks */
-    long long stat_reply_buffer_expands; /* Total number of output buffer expands */
     monotime el_start;
     /* The following two are used to record the max number of commands executed in one eventloop.
      * Note that commands in transactions are also counted. */
@@ -2006,7 +2073,6 @@ struct redisServer {
     /* The sum of active-expire, active-defrag and all other tasks done by cron and beforeSleep,
        but excluding read, write and AOF, which are counted by other sets of metrics. */
     monotime el_cron_duration;
-    durationStats duration_stats[EL_DURATION_TYPE_NUM];
 
     /* Configuration */
     int verbosity;                  /* Loglevel in redis.conf */
@@ -2050,50 +2116,36 @@ struct redisServer {
     int lazyexpire_nested_arbitrary_keys; /* If disabled, avoid lazy-expire from commands that touch arbitrary keys (SCAN/RANDOMKEY) within transactions */
 
     /* AOF persistence */
-    int aof_enabled;                /* AOF configuration */
-    int aof_state;                  /* AOF_(ON|OFF|WAIT_REWRITE) */
     int aof_fsync;                  /* Kind of fsync() policy */
     char *aof_filename;             /* Basename of the AOF file and manifest file */
     char *aof_dirname;              /* Name of the AOF directory */
     int aof_no_fsync_on_rewrite;    /* Don't fsync if a rewrite is in prog. */
     int aof_rewrite_perc;           /* Rewrite AOF if % growth is > M and... */
     off_t aof_rewrite_min_size;     /* the AOF file is at least N bytes. */
-    off_t aof_rewrite_base_size;    /* AOF size on latest startup or rewrite. */
-    off_t aof_current_size;         /* AOF current size (Including BASE + INCRs). */
     off_t aof_last_incr_size;       /* The size of the latest incr AOF. */
     off_t aof_last_incr_fsync_offset; /* AOF offset which is already requested to be synced to disk.
                                        * Compare with the aof_last_incr_size. */
     int aof_flush_sleep;            /* Micros to sleep before flush. (used by tests) */
-    int aof_rewrite_scheduled;      /* Rewrite once BGSAVE terminates. */
-    sds aof_buf;      /* AOF buffer, written before entering the event loop */
     int aof_fd;       /* File descriptor of currently selected AOF file */
     int aof_selected_db; /* Currently selected DB in AOF */
     mstime_t aof_flush_postponed_start; /* mstime of postponed AOF flush */
     mstime_t aof_last_fsync;            /* mstime of last fsync() */
-    time_t aof_rewrite_time_last;   /* Time used by last AOF rewrite run. */
-    time_t aof_rewrite_time_start;  /* Current AOF rewrite start time. */
     time_t aof_cur_timestamp;       /* Current record timestamp in AOF */
     int aof_timestamp_enabled;      /* Enable record timestamp in AOF */
     int aof_lastbgrewrite_status;   /* C_OK or C_ERR */
-    unsigned long aof_delayed_fsync;  /* delayed AOF fsync() counter */
     int aof_rewrite_incremental_fsync;/* fsync incrementally while aof rewriting? */
     int rdb_save_incremental_fsync;   /* fsync incrementally while rdb saving? */
-    int aof_last_write_status;      /* C_OK or C_ERR */
     int aof_last_write_errno;       /* Valid if aof write/fsync status is ERR */
     int aof_load_truncated;         /* Don't stop on unexpected AOF EOF. */
     off_t aof_load_corrupt_tail_max_size; /* The max size of broken AOF tail than can be ignored. */
     int aof_use_rdb_preamble;       /* Specify base AOF to use RDB encoding on AOF rewrites. */
-    redisAtomic int aof_bio_fsync_status; /* Status of AOF fsync in bio job. */
     redisAtomic int aof_bio_fsync_errno;  /* Errno of AOF fsync in bio job. */
     aofManifest *aof_manifest;       /* Used to track AOFs. */
     int aof_disable_auto_gc;         /* If disable automatically deleting HISTORY type AOFs?
                                         default no. (for testings). */
 
     /* RDB persistence */
-    long long dirty;                /* Changes to DB from the last save */
     long long dirty_before_bgsave;  /* Used to restore dirty on failed BGSAVE */
-    long long rdb_last_load_keys_expired;  /* number of expired keys when loading RDB */
-    long long rdb_last_load_keys_loaded;   /* number of loaded keys when loading RDB */
     int bgsave_aborted;             /* Set when killing a child, to treat it as aborted even if it succeeds. */
     struct saveparam *saveparams;   /* Save points array for RDB */
     int saveparamslen;              /* Number of saving points */
@@ -2102,13 +2154,9 @@ struct redisServer {
     int rdb_checksum;               /* Use RDB checksum? */
     int rdb_del_sync_files;         /* Remove RDB files used only for SYNC if
                                        the instance does not use persistence. */
-    time_t lastsave;                /* Unix time of last successful save */
     time_t lastbgsave_try;          /* Unix time of last attempted bgsave */
-    time_t rdb_save_time_last;      /* Time used by last RDB save run. */
-    time_t rdb_save_time_start;     /* Current RDB save start time. */
     int rdb_bgsave_scheduled;       /* BGSAVE when possible if true. */
     int rdb_child_type;             /* Type of save by active child. */
-    int lastbgsave_status;          /* C_OK or C_ERR */
     int stop_writes_on_bgsave_err;  /* Don't allow writes if can't BGSAVE */
     int rdb_pipe_read;              /* RDB pipe used to transfer the rdb data */
                                     /* to the parent process in diskless repl. */
@@ -2146,10 +2194,6 @@ struct redisServer {
     int shutdown_on_sigterm;        /* Shutdown flags configured for SIGTERM. */
 
     /* Replication (master) */
-    char replid[CONFIG_RUN_ID_SIZE+1];  /* My current replication ID. */
-    char replid2[CONFIG_RUN_ID_SIZE+1]; /* replid inherited from master*/
-    long long master_repl_offset;   /* My current replication offset */
-    long long second_replid_offset; /* Accept offsets up to this for replid2. */
     redisAtomic long long fsynced_reploff_pending;/* Largest replication offset to
                                      * potentially have been fsynced, applied to
                                        fsynced_reploff only when AOF state is AOF_ON
@@ -2158,9 +2202,7 @@ struct redisServer {
     int slaveseldb;                 /* Last SELECTed DB in replication output */
     int repl_ping_slave_period;     /* Master pings the slave every N seconds */
     replBacklog *repl_backlog;      /* Replication backlog for partial syncs */
-    long long repl_backlog_size;    /* Backlog circular buffer size */
     long long repl_full_sync_buffer_limit; /* Accumulated repl data limit during rdb channel replication */
-    replDataBuf repl_full_sync_buffer;  /* Accumulated replication data for rdb channel replication */
     time_t repl_backlog_time_limit; /* Time without slaves after the backlog
                                        gets released. */
     time_t repl_no_slaves_since;    /* We have no slaves since that time.
@@ -2177,7 +2219,6 @@ struct redisServer {
     int repl_rdb_channel;           /* Config used to determine if the replica should
                                      * use rdb channel replication for full syncs. */
     int repl_debug_pause;           /* Debug config to force the main process to pause. */
-    size_t repl_buffer_mem;         /* The memory of replication buffer. */
     list *repl_buffer_blocks;       /* Replication buffers blocks list
                                      * (serving replica clients and repl backlog) */
     time_t repl_stream_lastio;      /* Unix time of the latest sending replication stream. */
@@ -2206,7 +2247,6 @@ struct redisServer {
     int repl_serve_stale_data; /* Serve stale data when link is down? */
     int repl_slave_ro;          /* Slave is read only? */
     int repl_slave_ignore_maxmemory;    /* If true slaves do not evict. */
-    time_t repl_down_since; /* Unix time at which link with master went down */
     time_t repl_up_since;   /* Unix time that master link is fully up and healthy */
     int repl_disable_tcp_nodelay;   /* Disable TCP_NODELAY after SYNC? */
     int slave_priority;             /* Reported in INFO and used by Sentinel. */
@@ -2231,7 +2271,6 @@ struct redisServer {
     time_t repl_disconnect_start_time;       /* Unix time that master disconnection start */
     time_t repl_total_disconnect_time;       /* The total cumulative time we've been disconnected as a replica, visible when the link is up too. */
     /* Limits */
-    unsigned int maxclients;            /* Max number of simultaneous clients */
     unsigned long long maxmemory;   /* Max number of memory bytes to use */
     ssize_t maxmemory_clients;       /* Memory limit for total client buffers */
     int maxmemory_policy;           /* Policy for key eviction */
@@ -2244,12 +2283,10 @@ struct redisServer {
     int oom_score_adj;                            /* If true, oom_score_adj is managed */
     int disable_thp;                              /* If true, disable THP by syscall */
     /* Blocked clients */
-    unsigned int blocked_clients;   /* # of clients executing a blocking cmd.*/
     unsigned int blocked_clients_by_type[BLOCKED_NUM];
     list *unblocked_clients; /* list of clients to unblock before next loop */
     list *ready_keys;        /* List of readyList structures for BLPOP & co */
     /* Client side caching. */
-    unsigned int tracking_clients;  /* # of clients with tracking enabled.*/
     size_t tracking_table_max_keys; /* Max number of keys in tracking table. */
     list *tracking_pending_keys; /* tracking invalidation keys pending to flush */
     list *pending_push_messages; /* pending publish or other push messages to flush */
@@ -2274,22 +2311,15 @@ struct redisServer {
     int list_max_listpack_size;
     int list_compress_depth;
     /* time cache */
-    redisAtomic time_t unixtime; /* Unix time sampled every cron cycle. */
     time_t timezone;            /* Cached timezone. As set by tzset(). */
     redisAtomic int daylight_active; /* Currently in daylight saving time. */
     mstime_t mstime;            /* 'unixtime' in milliseconds. */
-    ustime_t ustime;            /* 'unixtime' in microseconds. */
     mstime_t cmd_time_snapshot; /* Time snapshot of the root execution nesting. */
     size_t blocking_op_nesting; /* Nesting level of blocking operation, used to reset blocked_last_cron. */
     long long blocked_last_cron; /* Indicate the mstime of the last time we did cron jobs from a blocking operation */
     /* Pubsub */
-    kvstore *pubsub_channels;  /* Map channels to list of subscribed clients */
-    dict *pubsub_patterns;  /* A dict of pubsub_patterns */
     int notify_keyspace_events; /* Events to propagate via Pub/Sub. This is an
                                    xor of NOTIFY_... flags. */
-    kvstore *pubsubshard_channels;  /* Map shard channels in every slot to list of subscribed clients */
-    unsigned int pubsub_clients; /* # of clients in Pub/Sub mode */
-    unsigned int watching_clients; /* # of clients are wathcing keys */
     /* Cluster */
     int cluster_enabled;      /* Is cluster enabled? */
     int cluster_port;         /* Set the cluster port for a node. */

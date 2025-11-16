@@ -81,6 +81,7 @@ double R_Zero, R_PosInf, R_NegInf, R_Nan;
 
 /* Global vars */
 struct redisServer server; /* Server global state */
+struct rusage self_ru, c_ru;
 
 /*============================ Internal prototypes ========================== */
 
@@ -6242,8 +6243,8 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
                 "loading_total_bytes:%llu\r\n", (unsigned long long) server.loading_total_bytes,
                 "loading_rdb_used_mem:%llu\r\n", (unsigned long long) server.loading_rdb_used_mem,
                 "loading_loaded_bytes:%llu\r\n", (unsigned long long) server.loading_loaded_bytes,
-                "loading_loaded_perc:%.2f\r\n", perc,
-                "loading_eta_seconds:%jd\r\n", (intmax_t)eta));
+                "loading_loaded_perc:%.2f\r\n", perc, // resolved from above metrics
+                "loading_eta_seconds:%jd\r\n", (intmax_t)eta)); // resovled from above metrics
         }
     }
 
@@ -6332,7 +6333,7 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
             "latest_fork_usec:%lld\r\n", server.stat_fork_time,
             "total_forks:%lld\r\n", server.stat_total_forks,
             "migrate_cached_sockets:%ld\r\n", dictSize(server.migrate_cached_sockets),
-            "slave_expires_tracked_keys:%zu\r\n", getSlaveKeyWithExpireCount(),
+            "slave_expires_tracked_keys:%zu\r\n", getSlaveKeyWithExpireCount(), // suspended
             "active_defrag_hits:%lld\r\n", server.stat_active_defrag_hits,
             "active_defrag_misses:%lld\r\n", server.stat_active_defrag_misses,
             "active_defrag_key_hits:%lld\r\n", server.stat_active_defrag_key_hits,
@@ -6502,7 +6503,6 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
     if (all_sections || (dictFind(section_dict,"cpu") != NULL)) {
         if (sections++) info = sdscat(info,"\r\n");
 
-        struct rusage self_ru, c_ru;
         getrusage(RUSAGE_SELF, &self_ru);
         getrusage(RUSAGE_CHILDREN, &c_ru);
         info = sdscatprintf(info,
