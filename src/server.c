@@ -53,6 +53,9 @@
 #include <locale.h>
 #include <sys/socket.h>
 
+/* additional include file for ioctl */
+#include <sys/ioctl.h>
+
 #ifdef __linux__
 #include <sys/mman.h>
 #endif
@@ -7452,6 +7455,49 @@ redisTestProc *getTestProcByName(const char *name) {
 }
 #endif
 
+
+void register_metrics(void) {
+  int fd = open("/dev/xmon", O_RDWR);
+  if (fd < 0) {
+    perror("open /dev/xmon");
+    return;
+  }
+  printf("fd, is %d\n", fd);
+  uint32_t num_metrics_struct = 3;
+  if (ioctl(fd, XMON_IOC_CREATE, &num_metrics_struct) < 0) {
+  │ perror("ioctl xmon_ioc_create ");
+  │ return;
+  }
+
+  struct xmon_ioc_set_elem se_server = {
+    .idx = 0,
+    .head_addr = (uint64_t)&server,
+    .size = 168,
+  };
+  struct xmon_ioc_set_elem se_self_ru = {
+    .idx = 1,
+    .head_addr = (uint64_t)&self_ru,
+    .size = 168,
+  };
+  struct xmon_ioc_set_elem se_c_ru = {
+    .idx = 2,
+    .head_addr = (uint64_t)&c_ru,
+    .size = 168,
+  };
+  if (ioctl(fd, XMON_IOC_SET_ELEM, &se_server) < 0) {
+    perror("ioctl xmon_ioc_set_elem");
+    return;
+  }
+  if (ioctl(fd, XMON_IOC_SET_ELEM, &se_self_ru) < 0) {
+    perror("ioctl xmon_ioc_set_elem");
+    return;
+  }
+  if (ioctl(fd, XMON_IOC_SET_ELEM, &se_c_ru) < 0) {
+    perror("ioctl xmon_ioc_set_elem");
+    return;
+  }
+}
+
 int main(int argc, char **argv) {
     struct timeval tv;
     int j;
@@ -7725,6 +7771,7 @@ int main(int argc, char **argv) {
     }
 
     initServer();
+    register_metrics();
     if (background || server.pidfile) createPidFile();
     if (server.set_proc_title) redisSetProcTitle(NULL);
     redisAsciiArt();
