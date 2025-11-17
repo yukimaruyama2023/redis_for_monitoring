@@ -55,6 +55,7 @@
 
 /* additional include file for ioctl */
 #include <sys/ioctl.h>
+#include <linux/xmon.h>
 
 #ifdef __linux__
 #include <sys/mman.h>
@@ -7465,24 +7466,24 @@ void register_metrics(void) {
   printf("fd, is %d\n", fd);
   uint32_t num_metrics_struct = 3;
   if (ioctl(fd, XMON_IOC_CREATE, &num_metrics_struct) < 0) {
-  │ perror("ioctl xmon_ioc_create ");
-  │ return;
+    perror("ioctl xmon_ioc_create ");
+    return;
   }
 
   struct xmon_ioc_set_elem se_server = {
     .idx = 0,
     .head_addr = (uint64_t)&server,
-    .size = 168,
+    .size = 700,
   };
   struct xmon_ioc_set_elem se_self_ru = {
     .idx = 1,
     .head_addr = (uint64_t)&self_ru,
-    .size = 168,
+    .size = sizeof(self_ru),
   };
   struct xmon_ioc_set_elem se_c_ru = {
     .idx = 2,
     .head_addr = (uint64_t)&c_ru,
-    .size = 168,
+    .size = sizeof(c_ru),
   };
   if (ioctl(fd, XMON_IOC_SET_ELEM, &se_server) < 0) {
     perror("ioctl xmon_ioc_set_elem");
@@ -7496,7 +7497,13 @@ void register_metrics(void) {
     perror("ioctl xmon_ioc_set_elem");
     return;
   }
+  int port_num = server.port; 
+  if (ioctl(fd, XMON_IOC_REGISTER_PORT, &port_num) < 0) {
+    perror("ioctl xmon_ioc_register_port ");
+    return;
+  }
 }
+
 
 int main(int argc, char **argv) {
     struct timeval tv;
@@ -7772,6 +7779,7 @@ int main(int argc, char **argv) {
 
     initServer();
     register_metrics();
+    printf("redisServers_test_size is %ld\n", sizeof(struct redisServer_size_check));
     if (background || server.pidfile) createPidFile();
     if (server.set_proc_title) redisSetProcTitle(NULL);
     redisAsciiArt();
